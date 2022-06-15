@@ -1,3 +1,4 @@
+import datetime
 import time
 from user_agent import generate_user_agent
 import asyncio
@@ -5,16 +6,14 @@ import aiohttp
 from openpyxl import load_workbook
 import json
 from asyncio import Semaphore
-from config import host, user, password,db_name
 import pymysql
+from config import *
 
 
-
-
-async def parser(row, semaphore, connection):
+async def parser(row, semaphore, connection, tabl_name):
     await semaphore.acquire()
     page = 1
-    position = 0
+    position = 1
     flag = True
     headers = {
         "Accept": "*/*",
@@ -31,97 +30,89 @@ async def parser(row, semaphore, connection):
                   "&locale=ru" \
                   f"&page={page}" \
                   "&pricemarginCoeff=1.0" \
-                  f"&query={row[1]}" \
+                  f"&query={row[0]}" \
                   "&reg=0" \
                   "&regions=68,64,83,4,38,80,33,70,82,86,75,30,69,22,66,31,48,1,40,71" \
-                  "&resultset=catalog&sort=popular" \
+                  "&resultset=catalog" \
+                  "&sort=popular" \
                   "&spp=0" \
                   "&stores=117673,122258,122259,125238,125239,125240,6159,507,3158,117501,120602,120762,6158,121709,124731,159402,2737,130744,117986,1733,686,132043,1193"
-            # if page == 61:
-            #     await asyncio.sleep(10)
-            async with session.get(url=url, headers=headers) as r:
-                html_cod = await r.text()
-                page += 1
-                try:
-                    products = json.loads(html_cod)['data']['products']
-                    if len(products) > 0:
+            if page < 50:
 
-                        for product in products:
-                            id = product['id']
-                            position += 1
-                            # print(f"Запрос {row[1]}\nСтраница {page}\n{row[0]}\n{id}\n--------")
-                            if row[0] == id:
-                                item_position = position
-                                print(f"++++++++\nНайдено совпадение. Позиция в поиске {position}\n{row[0]}\n{id}\n++++++++")
-                                flag = False
-                                break
-                    else:
+                async with session.get(url=url, headers=headers) as r:
+                    html_cod = await r.text()
+
+                    try:
+                        products = json.loads(html_cod)['data']['products']
+                        if len(products) > 0:
+                            for product in products:
+                                id = product['id']
+                                today = datetime.datetime.today()
+                                time_pars = today.strftime("%Y-%m-%d-%H.%M.%S")
+                                with connection.cursor() as cursor:
+                                    # insert = f"INSERT INTO `item_position`.`{tabl_name}` ('label', `id`, `key`, `position`, `time_pars`) VALUES ('{row[1]}', '{id}', '{row[0]}', '{position}', '{time_pars}');"
+                                    insert = f"INSERT INTO `item_position`.`{tabl_name}` (`label`, `id`, `key`, `position`, `time_pars`) VALUES ('{row[1]}', '{id}', '{row[0]}', '{position}', '{time_pars}');"
+                                    #          INSERT INTO `item_position`.`2022-06-14_22.04.27` (`label`, `id`, `key`, `position`, `time_pars`) VALUES ('лл', '1', 'ээ', '22', 'лол');
+                                    cursor.execute(insert)
+                                    connection.commit()
+                                    print(f"Запрос {row[0]}\nСтраница {page}\nid {id}\nПозиция в поиске {position}\n--------")
+                                    position += 1
+                        else:
+                            flag = False
+                    except Exception as ex:
+                        print(f"ошибка {ex}")
                         flag = False
-                        print(f"По запросу {row[1]} товар {row[0]} не найден")
-                        item_position = '-'
-                except:
-                    flag = False
-                    item_position = '-'
-                    print(f"По запросу {row[1]} товар {row[0]} не найден")
-
-    with connection.cursor() as cursor:
-        insert = f"INSERT INTO `item_position`.`tabl` (`id`, `key`, `position`) VALUES ('{row[0]}', '{row[1]}', '{item_position}');"
-        cursor.execute(insert)
-        connection.commit()
-
+                    finally:
+                        page += 1
+            else:
+                flag = False
     semaphore.release()
 
-async def gahter(connection):
-
+async def gahter(connection, tabl_name):
     semaphore = Semaphore(30)
-
     tasks = []
     wb = load_workbook(filename='1.xlsx')
     sheet = wb.worksheets[0]
     for i, row in enumerate(sheet.values):
         if i > 0:
-            if row[1] != None:
-                task = asyncio.create_task(parser(row, semaphore, connection))  # создал задачу
+            if row[0] != None:
+                task = asyncio.create_task(parser(row, semaphore, connection, tabl_name))  # создал задачу
                 tasks.append(task)  # добавил её в список
         await asyncio.gather(*tasks)
 
-
-
-def main(connection):
-    # clear_base()
-
-    asyncio.get_event_loop().run_until_complete(gahter(connection))
-
-
-
+def main(connection, tabl_name):
+    asyncio.get_event_loop().run_until_complete(gahter(connection, tabl_name))
 
 if __name__ == '__main__':
     start_time = time.time()
     print('Подключаюсь к базе')
-    input()
+    # input()
     connection = pymysql.connect(
-        host="localhost",
+        host=host,
         port=3306,
-        user="root",
-        password="4hYu48AE198L",  # У меня
-        # password="J8YHgYpPx7Gq",  # На сервере
-        database="item_position",
-        cursorclass=pymysql.cursors.DictCursor
+        user=user,
+        # password="4hYu48AE198L",
+        # password="J8YHgYpPx7Gq",
+        password=password,
+        database=db_name
+        # cursorclass=pymysql.cursors.DictCursor
     )
     print("Подключился к базе")
-    input()
-    print("Очистил базу")
-    input()
+    today = datetime.datetime.today()
+    # tabl_name = str(time.time()).replace('.', '')
+    tabl_name = today.strftime("%Y-%m-%d_%H.%M.%S")
     with connection.cursor() as cursor:
-        clear_base = "TRUNCATE tabl;"  # удалит всё содержимое таблицы
-        cursor.execute(clear_base)
+        create_table = f"CREATE TABLE `{tabl_name}`(`label` TEXT NULL, `id` INT NULL,`key` TEXT NULL,`position` INT NULL,`time_pars` TEXT NULL) COLLATE='utf8mb4_0900_ai_ci';"
+        # create_table = f"CREATE TABLE `{tabl_name}`(`id` INT NULL,`key` TEXT NULL,`position` INT NULL,`time_pars` TEXT NULL) COLLATE='utf8mb4_0900_ai_ci';"
+        cursor.execute(create_table)
         connection.commit()
+        print(f"Таблица создана\nИмя таблицы {tabl_name}")
 
-    main(connection)
+    main(connection, tabl_name)
     connection.close()
     print('закрыл базу')
-    input()
+    # input()
     end_time = time.time()
     total_time = end_time - start_time
-    print(f"Время работы {total_time}")
+    print(f"Время работы {total_time}\nДля закрытия нажмите Enter")
     input()
